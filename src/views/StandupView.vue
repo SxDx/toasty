@@ -64,9 +64,6 @@ function next() {
   setTimeout(() => {
     transitioning.value = false
   }, 500)
-  if (currentIndex.value >= shuffled.value.length - 1) {
-    finishStandup()
-  }
 }
 
 function finishStandup() {
