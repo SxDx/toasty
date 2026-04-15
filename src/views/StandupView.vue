@@ -13,6 +13,7 @@ const finished = ref(false)
 const elapsedSeconds = ref(0)
 let timerInterval: ReturnType<typeof setInterval> | null = null
 const transitioning = ref(false)
+const skipped = ref(new Set<number>())
 
 onMounted(() => {
   const stored = localStorage.getItem('standup-people')
@@ -28,9 +29,9 @@ onUnmounted(() => {
 })
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'n' && started.value && !finished.value && !transitioning.value) {
-    next()
-  }
+  if (!started.value || finished.value || transitioning.value) return
+  if (e.key === 'n') next()
+  if (e.key === 's') skip()
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -48,19 +49,44 @@ function startStandup() {
   started.value = true
   finished.value = false
   elapsedSeconds.value = 0
+  skipped.value = new Set()
   timerInterval = setInterval(() => {
     elapsedSeconds.value++
   }, 1000)
 }
 
+function findNextActive(fromIndex: number): number {
+  for (let i = fromIndex + 1; i < shuffled.value.length; i++) {
+    if (!skipped.value.has(i)) return i
+  }
+  return -1
+}
+
 function next() {
   if (transitioning.value) return
-  if (currentIndex.value >= shuffled.value.length - 1) {
+  const nextIdx = findNextActive(currentIndex.value)
+  if (nextIdx === -1) {
     finishStandup()
     return
   }
   transitioning.value = true
-  currentIndex.value++
+  currentIndex.value = nextIdx
+  setTimeout(() => {
+    transitioning.value = false
+  }, 500)
+}
+
+function skip() {
+  if (transitioning.value) return
+  skipped.value.add(currentIndex.value)
+  skipped.value = new Set(skipped.value) // trigger reactivity
+  const nextIdx = findNextActive(currentIndex.value)
+  if (nextIdx === -1) {
+    finishStandup()
+    return
+  }
+  transitioning.value = true
+  currentIndex.value = nextIdx
   setTimeout(() => {
     transitioning.value = false
   }, 500)
@@ -72,6 +98,21 @@ function finishStandup() {
     timerInterval = null
   }
   finished.value = true
+  saveHistory()
+}
+
+function saveHistory() {
+  const record = {
+    date: new Date().toISOString(),
+    totalSeconds: elapsedSeconds.value,
+    totalPeople: shuffled.value.length,
+    activePeople: shuffled.value.length - skipped.value.size,
+  }
+  const stored = localStorage.getItem('standup-history')
+  const history = stored ? JSON.parse(stored) : []
+  history.push(record)
+  if (history.length > 100) history.splice(0, history.length - 100)
+  localStorage.setItem('standup-history', JSON.stringify(history))
 }
 
 function reset() {
@@ -80,6 +121,7 @@ function reset() {
   currentIndex.value = 0
   shuffled.value = []
   elapsedSeconds.value = 0
+  skipped.value = new Set()
 }
 
 const formattedTime = computed(() => {
@@ -88,8 +130,20 @@ const formattedTime = computed(() => {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 })
 
+const activeCount = computed(() => shuffled.value.length - skipped.value.size)
+
+const currentActiveIndex = computed(() => {
+  let count = 0
+  for (let i = 0; i < shuffled.value.length; i++) {
+    if (skipped.value.has(i)) continue
+    count++
+    if (i === currentIndex.value) return count
+  }
+  return count
+})
+
 const progressText = computed(() => {
-  return `FLIGHT ${currentIndex.value + 1} OF ${shuffled.value.length}`
+  return `FLIGHT ${currentActiveIndex.value} OF ${activeCount.value}`
 })
 
 function gateLabel(index: number): string {
@@ -97,10 +151,12 @@ function gateLabel(index: number): string {
 }
 
 function statusOf(index: number): string {
+  if (skipped.value.has(index)) return 'CANCELLED'
   if (finished.value) return 'LANDED'
   if (index < currentIndex.value) return 'LANDED'
   if (index === currentIndex.value) return 'DEPARTING'
-  if (index === currentIndex.value + 1) return 'BOARDING'
+  const nextIdx = findNextActive(currentIndex.value)
+  if (index === nextIdx) return 'BOARDING'
   return 'SCHEDULED'
 }
 
@@ -108,7 +164,7 @@ function rowClass(index: number): string {
   return `row-${statusOf(index).toLowerCase()}`
 }
 
-const isLastPerson = computed(() => currentIndex.value >= shuffled.value.length - 1)
+const isLastPerson = computed(() => findNextActive(currentIndex.value) === -1)
 </script>
 
 <template>
@@ -138,6 +194,7 @@ const isLastPerson = computed(() => currentIndex.value >= shuffled.value.length 
       <div class="btn-row">
         <button @click="startStandup" class="btn btn-primary">BEGIN BOARDING</button>
         <button @click="router.push('/people')" class="btn btn-ghost">EDIT PASSENGERS</button>
+        <button @click="router.push('/history')" class="btn btn-ghost">FLIGHT LOG</button>
       </div>
     </div>
 
@@ -195,12 +252,22 @@ const isLastPerson = computed(() => currentIndex.value >= shuffled.value.length 
 
       <!-- Bottom action -->
       <footer class="board-footer">
-        <button v-if="!finished" @click="next" class="btn btn-primary">
-          {{ isLastPerson ? 'FINAL LANDING' : 'NEXT FLIGHT' }}
-        </button>
-        <button v-if="finished" @click="reset" class="btn btn-primary">
-          NEW FLIGHT PLAN
-        </button>
+        <div v-if="!finished" class="btn-row">
+          <button @click="next" class="btn btn-primary">
+            {{ isLastPerson ? 'FINAL LANDING' : 'NEXT FLIGHT' }} <span class="key-hint">[N]</span>
+          </button>
+          <button @click="skip" class="btn btn-ghost btn-skip">
+            CANCEL FLIGHT <span class="key-hint">[S]</span>
+          </button>
+        </div>
+        <div v-if="finished" class="btn-row">
+          <button @click="reset" class="btn btn-primary">
+            NEW FLIGHT PLAN
+          </button>
+          <button @click="router.push('/history')" class="btn btn-ghost">
+            VIEW FLIGHT LOG
+          </button>
+        </div>
       </footer>
     </div>
 
@@ -445,6 +512,12 @@ const isLastPerson = computed(() => currentIndex.value >= shuffled.value.length 
   color: #3f3f46;
 }
 
+.row-cancelled {
+  color: #ef4444;
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
 /* ── Status cell ── */
 .status-cell {
   display: flex;
@@ -463,10 +536,28 @@ const isLastPerson = computed(() => currentIndex.value >= shuffled.value.length 
   50% { transform: translateX(3px); }
 }
 
+/* ── Key hints ── */
+.key-hint {
+  font-size: 0.75em;
+  opacity: 0.5;
+  margin-left: 0.3em;
+}
+
+.btn-skip {
+  border-color: #52252580;
+  color: #ef444480;
+}
+
+.btn-skip:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
 /* ── Footer ── */
 .board-footer {
   padding: 1.5rem 0;
-  text-align: center;
+  display: flex;
+  justify-content: center;
   flex-shrink: 0;
 }
 </style>
