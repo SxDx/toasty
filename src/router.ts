@@ -6,6 +6,7 @@ import HistoryView from './views/HistoryView.vue'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/index.html', redirect: '/' },
     { path: '/', component: StandupView },
     { path: '/people', component: PeopleView },
     { path: '/history', component: HistoryView },
